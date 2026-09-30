@@ -410,7 +410,6 @@ describe('MigrationFindingQueryService', () => {
 					] as BreakingChangeWorkflowRuleResult[],
 				},
 				totalWorkflows: 2,
-				shouldCache: false,
 				failedChecks: [],
 			});
 
