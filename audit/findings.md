@@ -6,18 +6,100 @@ Only (a) belongs in `report-draft.md`.
 
 ## Category (a) — confirmed bug-bounty vulnerabilities
 
-**None confirmed** in the surfaces reviewed at commit `5933694` (n8n 2.40.0).
+### F-1 — Source Control: unvalidated `repositoryUrl` → OS command execution via git `ext::` transport
+- **Status:** CONFIRMED at code level (call path fully read). RCE not detonated
+  (weaponization out of scope); a safe PoC proves the validation gap.
+- **Commit / locations:**
+  - `packages/cli/src/modules/source-control.ee/types/source-control-preferences.ts:13-14`
+    — `repositoryUrl` is only `@IsString()` (no format/protocol validation).
+  - `packages/cli/src/modules/source-control.ee/source-control-preferences.service.ee.ts:259-276`
+    — `validateSourceControlPreferences` runs class-validator only (so only the
+    `@IsString()` above).
+  - `packages/cli/src/modules/source-control.ee/source-control.controller.ee.ts:66-129`
+    — `POST /rest/source-control/preferences` (`@GlobalScope('sourceControl:manage')`),
+    `initRepo` defaults to `true`.
+  - `packages/cli/src/modules/source-control.ee/source-control-git.service.ee.ts:225,241,263`
+    — `git.addRemote(SOURCE_CONTROL_ORIGIN, repositoryUrl)` then
+    `trackRemoteIfReady` → `fetch()` (network op against the attacker-set remote).
+  - `.../source-control-git.service.ee.ts:120-159` — git env sets
+    `GIT_TERMINAL_PROMPT=0` etc. but **no** `GIT_ALLOW_PROTOCOL` restriction.
+- **Violated rule / boundary (I8/I9 + RBAC intent):** the `sourceControl:manage`
+  scope is intended to configure a git remote for environment sync, not to grant
+  arbitrary host OS command execution. A principal holding only that scope can
+  escalate to RCE on the n8n host.
+- **Expected vs observed:** Expected — the remote URL is validated to an
+  `http(s)`/`ssh` remote and transport helpers / argument-injection are rejected
+  (this is exactly what the sibling `promotions.ee` module and the Git node do,
+  see "Intended defense exists"). Observed — any string is accepted and handed to
+  git; a value like `ext::sh -c '<cmd>'` makes `git fetch` invoke git's `ext`
+  transport, which executes `<cmd>` on the host. A leading `-` also enables git
+  argument injection.
+- **Intended defense exists (proves this is a gap, not by-design):**
+  - `packages/cli/src/modules/promotions.ee/promotions-git.service.ts:104-131`
+    `validateSshRemoteUrl`: `if (remoteUrl.startsWith('-') || remoteUrl.includes('::')) throw` —
+    comment: "Git transport helpers and local paths can execute or expose host
+    data." Plus `validateHttpRemoteUrl` enforcing `http:`/`https:`.
+  - `packages/nodes-base/nodes/Git/Git.node.ts:635` sets
+    `GIT_ALLOW_PROTOCOL` (excludes `ext`/`fd`), tested at
+    `Git.node.test.ts:1603` with `ext::sh -c "id"` / `fd::17/foo`.
+  - Source-control.ee has neither → the inconsistency is the bug.
+- **Trust boundary / who can reach it (nuance, stated honestly):**
+  - `sourceControl:manage` is in `GLOBAL_OWNER_SCOPES` and
+    `GLOBAL_ADMIN_SCOPES` (= owner scopes) and is an assignable **custom-role**
+    scope, bundled in `GLOBAL_CUSTOM_ROLE_SCOPE_GROUPS.settings.Manage`
+    (`@n8n/permissions/.../global-scopes.ee.ts:63,192`,
+    `custom-role-scopes.ee.ts:90`).
+  - **Owner:** self-compromise → out of scope (A2).
+  - **Default admin:** already has `communityPackage:install` (npm postinstall =
+    host RCE by design), so for a *default* admin this overlaps an existing
+    capability → weaker as an escalation.
+  - **Custom role with the settings-"Manage" bundle but not
+    `communityPackage:install`:** genuine escalation — a non-owner/non-admin
+    "instance-settings manager" gains host RCE they were not meant to have. This
+    is the category-(a) case.
+  - Enterprise-gated (source control + custom RBAC are licensed features).
+- **Impact (fact vs inference):** Fact — arbitrary host process execution as the
+  n8n process user on `fetch`. Inference — full instance compromise: read the
+  encryption key and all credentials, all projects/tenants' data; on n8n Cloud,
+  compromise of the tenant container (cross-tenant/platform impact depends on
+  Cloud isolation, which I cannot verify here).
+- **Safe verification:** `audit/poc/f1-repo-url-validation-gap.mjs` (run with
+  `node`, no deps, no git executed) demonstrates the differential: `ext::sh -c …`,
+  `fd::17/foo`, `-oProxyCommand=…`, and `file:///…` are all ACCEPTED by
+  source-control's effective validation (`@IsString()` only) but REJECTED by the
+  promotions `validateRemoteUrl`. Result: 4/4 malicious forms accepted by
+  source-control, rejected by promotions; legitimate `https://…/repo.git` and
+  `git@host:owner/repo.git` accepted by both. **Limitation:** `node_modules` is
+  empty in this container, so the real modules could not be imported/executed;
+  the PoC mirrors the cited source verbatim. The `@IsString()`-only check is
+  quoted directly from the source, so the source-control "ACCEPT" side is exact.
+- **Recommended fix:** validate `repositoryUrl` before persisting/using it —
+  reuse the promotions rule (reject control chars, leading `-`, `::`; require
+  `http:`/`https:` or an `ssh://`/scp-like remote; reject inline credentials)
+  and/or set `GIT_ALLOW_PROTOCOL` on the git env as the Git node does. Prefer a
+  shared helper so all three git call sites converge.
+- **Regression test:** a test asserting `validateSourceControlPreferences`
+  rejects `ext::`, `fd::`, `file://`, leading-`-`, and control-char URLs, and
+  accepts normal `https://…/repo.git` and `git@host:owner/repo.git`.
+- **Dedup:** advisory sources unreachable in this env (egress blocked) → novelty
+  UNVERIFIED. The vector is a known class; n8n fixed it in `promotions.ee` and
+  the Git node, so a source-control.ee advisory/fix may exist upstream — must be
+  checked before submission.
 
-This is a genuine negative result over the crown-jewel authorization surfaces
-(RBAC core, credential use/read/decrypt, resource IDOR on binary-data /
-executions / package export-import, design-time credential use in loadOptions,
-public-API vs internal-API parity). See `coverage.md` C1–C15 and the refuted
-hypotheses H1–H9 in `hypotheses.md`, each with the specific control cited. It is
-**not** a statement that the product is free of vulnerabilities: large,
-high-severity surfaces remain unreviewed (see `coverage.md` gaps and
-`next-steps.md`), and the expression sandbox / task-runner classes were
-deliberately not probed for escapes (weaponization is out of scope for this
-engagement).
+---
+
+## Category (a) — other surfaces reviewed
+
+Beyond F-1, the crown-jewel authorization surfaces reviewed (RBAC core,
+credential use/read/decrypt, resource IDOR on binary-data / executions /
+package export-import, design-time credential use in loadOptions, public-API vs
+internal-API parity, waiting-webhook resume tokens, data-table SQL, community
+npm exec, AI/chat markdown XSS) produced **no additional confirmed finding**.
+See `coverage.md` and refuted hypotheses H1–H10 in `hypotheses.md`, each with the
+specific control cited. This is not a claim the product is vulnerability-free:
+unreviewed high-value surfaces remain (see `next-steps.md`), and the expression
+sandbox / task-runner escape classes were deliberately not probed
+(weaponization out of scope).
 
 ## Category (c) — by-design (documented, not a report item)
 

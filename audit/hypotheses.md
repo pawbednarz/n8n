@@ -92,6 +92,27 @@ Each is deduplicated by root cause + trust boundary, not by symptom.
   exhaustively. See next-steps.
 - Verdict: config posture = by-design (F-C1); bypass hunt = open.
 
+## H11 — Source Control `repositoryUrl` enables git transport/argument RCE — CONFIRMED (F-1)
+- Rule (I8/I9 + RBAC intent): the `sourceControl:manage` capability should not
+  grant host OS command execution.
+- Path: `POST /rest/source-control/preferences` → `validateSourceControlPreferences`
+  (class-validator, `repositoryUrl` is `@IsString()` only) → `initRepository` →
+  `git.addRemote(origin, repositoryUrl)` → `fetch()`. No `GIT_ALLOW_PROTOCOL`
+  set. `ext::sh -c '<cmd>'` → git `ext` transport executes `<cmd>` on `fetch`.
+- Counter-evidence sought: a URL validator or protocol restriction in
+  source-control.ee — none found (grep for `GIT_ALLOW_PROTOCOL`, `new URL(`,
+  `validateRemoteUrl`, `::`, `ext::` all empty for that module).
+- Confirming evidence that this is a gap (not by-design): the sibling
+  `promotions.ee` module validates the same input (`validateRemoteUrl` rejects
+  `::`, leading `-`, non-http(s)/ssh) and the Git node sets `GIT_ALLOW_PROTOCOL`.
+- Safe PoC: `audit/poc/f1-repo-url-validation-gap.mjs` shows 4 malicious URL
+  forms accepted by source-control's check, rejected by promotions'.
+- Trust-boundary nuance: escalation is clearest for a custom-role holder of the
+  settings-"Manage" bundle (has `sourceControl:manage`, lacks
+  `communityPackage:install`); owner = self-compromise (out of scope); default
+  admin overlaps existing community-package RCE. See F-1.
+- Verdict: CONFIRMED code-level finding; RCE not detonated (out of scope).
+
 ## Refuted hypotheses summary
 H1–H9 each had a specific control found in code. The consistent pattern: n8n
 threads the acting user + required scope into every resource resolver and re-

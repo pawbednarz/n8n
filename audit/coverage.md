@@ -23,6 +23,18 @@ Commit `5933694`, n8n 2.40.0. Legend: ✅ reviewed, control verified present/cor
 | C14 | Expression sandbox (AST) | `workflow/src/expression-sandboxing.ts`, `utils.ts:isSafeObjectProperty` | Defense-in-depth present (this/globalThis neutralized, unsafe props blocked, computed access routed through `__sanitize`, class-extension guard). Not weaponized (see next-steps). |
 | C15 | Dynamic credentials unauth OAuth flow | `modules/dynamic-credentials.ee/dynamic-credentials.controller.ts` | Reviewed; identity-keyed per caller, rate-limited, resolvable-OAuth-only, documented rationale. No obvious boundary break; deep resolver model not fully traced (◑). |
 
+### Reviewed in the follow-up hunt (goal: "continue until you find something")
+
+| # | Flow / surface | Files | Result |
+|---|---|---|---|
+| C16 | Webhook request handling + cookie sanitizer | `webhooks/webhook-request-handler.ts`, `webhook-request-sanitizer.ts` | Sanitizer strips n8n auth/session cookies from webhook requests (workflow code can't harvest a visitor's session). Webhook CORS reflects origin but endpoints are unauthenticated → no credentialed CORS risk. OK. |
+| C17 | Waiting-webhook / send-and-wait resume auth | `webhooks/waiting-webhooks.ts`, `workflow/src/run-execution-data-factory.ts`, `utils.ts:generateSecureToken` | Resume gated by 256-bit crypto `resumeToken` (timing-safe) or HMAC for send-and-wait. Token auto-generated for all new executions. Legacy no-token executions skip validation (documented backwards-compat). OK. |
+| C18 | Data-table dynamic SQL | `modules/data-table/utils/sql-utils.ts`, `data-table-rows.repository.ts` | Identifiers quoted (`quoteIdentifier`, driver.escape) + `isValidColumnName`; filter values parameterized; sort direction typed enum. No SQL injection found. OK. |
+| C19 | Community package npm execution | `modules/community-packages/npm-utils.ts` | `execFile` with array args (no shell) → no command injection. Package install scripts run by design (owner-only). OK. |
+| C20 | AI/chat + tool-result rendering (XSS) | `features/ai/.../ToolResultJson.vue`, `InstanceAiMarkdown.vue`, `chatHub/.../useChatHubMarkdownOptions.ts` | JSON view escapes all values; markdown-it `html` disabled (default), KaTeX `trust` off. No XSS found. OK. |
+| C21 | e2e/dev/debug controller gating | `server.ts:128-139` | Imported (thus registered) only under `E2E_TESTS` / `N8N_DEV_RELOAD` / non-prod-multimain. Not reachable in production. OK. |
+| **C22** | **Source Control repositoryUrl → git** | `modules/source-control.ee/*`, `promotions.ee/promotions-git.service.ts`, `nodes-base/nodes/Git/Git.node.ts` | **FINDING F-1** — `repositoryUrl` unvalidated (`@IsString()` only) → `git addRemote`+`fetch`; `ext::` transport = RCE. Sibling promotions.ee + Git node defend it; source-control does not. |
+
 ## Partially reviewed ◑
 - Dynamic-credentials resolver internals (token storage keying, `validateIdentity`, csrf state binding) — controller-level only.
 - Unauth route inventory: enumerated (`skipAuth`/`allowUnauthenticated`), but only binary-data/signed, dynamic-credentials, and package/public-api paths traced to a decision. e2e/dev controllers assumed test-only (needs confirming they are not mounted in prod).

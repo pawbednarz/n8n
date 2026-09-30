@@ -6,6 +6,18 @@ category-(a) finding. The items below are the unreviewed high-value surfaces,
 ordered by expected yield × severity. Each says what to read and what would
 constitute a finding, so a next session does not repeat the completed analysis.
 
+## N0 — Finish/submit F-1 (Source Control repositoryUrl RCE) — TOP PRIORITY
+- Confirm program scope treats authenticated/privileged-scope RCE as in-scope,
+  and dedup against GitHub Security Advisories / CVE (blocked in this env) — a
+  fix may already exist upstream since promotions.ee/Git node were hardened.
+- If a live instance is available, confirm end-to-end in a lab with a benign
+  marker command (never exfiltration/destruction), to move the `ext::` execution
+  from hypothesis to observed.
+- Also probe the SSH path variants (`ssh -oProxyCommand=…` via a crafted remote)
+  and the `updatePreferences`/reconnect paths, and whether `git pull`/scheduled
+  sync re-triggers on a stored malicious URL after restart.
+- Draft fix + regression test are in `findings.md` F-1 / `report-draft.md`.
+
 ## N1 — AI-node transport injection completeness (low)
 - Why: F-B1 refuted direct HTTP clients in built-in nodes, but did not confirm
   every AI node *passes* the injected `OutboundHttp` transport to its SDK on

@@ -1,16 +1,92 @@
 # Bug-bounty report drafts
 
-## Status: no submission-ready report
+## Report 1 — Authenticated RCE via unvalidated Source Control repository URL (git `ext::` transport)
 
-No category-(a) vulnerability was confirmed in the reviewed surfaces
-(commit `5933694`, n8n 2.40.0). Per the engagement rules, only a confirmed,
-trust-boundary-violating finding with real impact is drafted here. There is
-none. A report with zero confirmed vulnerabilities is a valid outcome when
-coverage, evidence and limitations are documented — see `coverage.md`,
-`hypotheses.md`, `findings.md`.
+> Verified at code level (full call path read) + safe validation-gap PoC. The
+> RCE itself was **not** detonated (weaponization is out of engagement scope).
+> Confirm program scope and dedup (advisory access was blocked here) before
+> submitting.
 
-Below are the two closest candidates and exactly why each is **not** submittable
-as-is, so a follow-up session (or the program triager) can decide.
+**Summary.** n8n's Source Control (Environments) feature persists a
+user-supplied `repositoryUrl` with no format or protocol validation and hands it
+directly to `git` (`git remote add` + `git fetch`) via `simple-git`. A value
+using git's `ext::` transport (e.g. `ext::sh -c '<command>'`) causes `git fetch`
+to execute `<command>` on the n8n host. Any principal with the
+`sourceControl:manage` scope can therefore run arbitrary OS commands on the
+server. n8n already blocks this exact class in its sibling `promotions.ee` module
+and in the Git node (`GIT_ALLOW_PROTOCOL`), but the Source Control module does
+not, so this is an unintended gap.
+
+**Affected component / version.** `packages/cli` Source Control module
+(`src/modules/source-control.ee`), n8n 2.40.0 at commit `5933694` (present as
+long as the source-control git init/fetch path lacks URL validation). Enterprise
+feature (Source Control + custom RBAC are licensed). Applies to self-hosted; n8n
+Cloud impact depends on container isolation (unverified here).
+
+**Preconditions / privileges.**
+- An authenticated account holding the `sourceControl:manage` global scope. This
+  is held by owner and admin, and is assignable to a non-owner/non-admin via a
+  **custom role** carrying the settings-"Manage" bundle
+  (`GLOBAL_CUSTOM_ROLE_SCOPE_GROUPS.settings.Manage`), which includes
+  `sourceControl:manage` but **not** `communityPackage:install`.
+- Source Control must be licensed/enabled.
+- The instance must not already be connected (the endpoint requires disconnect
+  first for some changes; initial connect is the trigger).
+
+**Reproduction (on a local, disposable instance — do NOT run against shared or
+third-party hosts).**
+1. Sign in as a user with `sourceControl:manage` (owner, or a custom
+   settings-Manage role).
+2. `POST /rest/source-control/preferences` with a body whose `repositoryUrl` uses
+   the `ext::` transport, `connectionType: "ssh"`, `branchName: "main"`,
+   `initRepo: true`. (Use a benign marker command that only writes a local file
+   in your lab, never an exfiltration or destructive payload.)
+3. The server runs `git remote add origin <repositoryUrl>` then `git fetch`,
+   which invokes the `ext` transport and executes the command as the n8n process
+   user.
+
+**Observed vs expected.**
+- Observed: the URL passes validation (`repositoryUrl` is `@IsString()` only) and
+  reaches `git.addRemote` + `fetch`; git's `ext` transport executes the command.
+- Expected: the URL is rejected unless it is a normal `http(s)` or `ssh` remote
+  (the behaviour of `promotions.ee validateRemoteUrl` and the Git node's
+  `GIT_ALLOW_PROTOCOL`).
+
+**Impact.** Arbitrary OS command execution on the n8n host as the n8n process
+user → full instance compromise: decrypt the encryption key and all stored
+credentials, read every project's/tenant's data, pivot into the internal
+network. For a non-owner custom-role holder this is a privilege escalation from
+"manage instance settings" to host RCE.
+
+**Suggested CVSS (v3.1).** `AV:N/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H` → **9.1 (Critical)**.
+Rationale: network-reachable authenticated endpoint (PR:H — a privileged app
+scope), no user interaction, host RCE escaping the app sandbox (S:C) with full
+CIA loss. If the program scores owner/admin-only RCE lower (because default
+admins already have community-package RCE), the honest rating for the *default
+admin* case is closer to Medium/High; the **custom-role escalation** case
+warrants the Critical rating above. Provide both framings to the triager.
+
+**Proposed fix.** Validate `repositoryUrl` before persisting/using it: reject
+control characters, a leading `-`, and `::`; require `http:`/`https:` or an
+`ssh://`/scp-like remote with a host and path; reject inline credentials. Reuse
+`promotions.ee`'s `validateRemoteUrl` (extract to a shared helper so Source
+Control, Promotions and the Git node converge), and/or set `GIT_ALLOW_PROTOCOL`
+on the source-control git env as the Git node does.
+
+**Verified vs hypothesis.** Verified: the full call path, the absence of
+validation/protocol-restriction, and the differential vs `promotions.ee`
+(safe PoC, `audit/poc/f1-repo-url-validation-gap.mjs`). Hypothesis (not
+detonated): that git's default `protocol.ext.allow=user` policy permits the
+`ext` transport for this top-level `fetch` (no `GIT_PROTOCOL_FROM_USER=0` is
+set), yielding execution. This is the standard git `ext::` RCE behaviour but was
+not run here.
+
+---
+
+## Secondary candidates (not submission-ready)
+
+Below are two lower-severity candidates and exactly why each is **not**
+submittable as-is.
 
 ---
 
