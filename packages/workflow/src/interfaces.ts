@@ -3797,7 +3797,7 @@ export interface IWorkflowExecutionDataProcess {
 	 */
 	engineV2Response?: {
 		executionId: string;
-		responseMode: 'lastNode' | 'responseNode';
+		responseMode: 'lastNode' | 'responseNode' | 'streaming';
 	};
 	startedAt?: Date;
 
